@@ -79,12 +79,10 @@ class UserbotListener:
             text = extract_text_from_event(event)
             snippet = text if len(text) <= 80 else text[:77] + "..."
             
-            # 每10条消息记录一次，避免日志过多
-            # 使用简单的计数器（基于消息ID的最后一位）
-            if event.message.id % 10 == 0:
-                logger.debug(f"[{self.account_name}] 📨 收到消息: {chat_title} | {sender_display_name} | {snippet[:50]}")
+            # 简化日志：只在检测到关键词时记录
+            # logger.info(f"[{self.account_name}] [监听] 会话: {chat_title} | 发送者: {sender_display_name} | 文本: {snippet}")
         except Exception as e:
-            logger.debug(f"[{self.account_name}] [监听] 日志生成失败: {e}")
+            logger.error(f"[{self.account_name}] [监听] 日志生成失败: {e}")
     
     async def send_keyword_alert(self, event, keyword_hit):
         """直接使用机器人客户端发送关键词提醒到目标群"""
@@ -168,7 +166,7 @@ class UserbotListener:
                 if event.is_private:
                     return
                 
-                # 打印监听日志（每10条记录一次）
+                # 打印监听日志
                 await self.log_incoming_event(event)
                 
                 # 加载最新配置
@@ -218,13 +216,7 @@ class UserbotListener:
             return
         self.is_running = True
         await self.setup_handlers()
-        logger.info(f"[{self.account_name}] 监听已启动，事件处理器已注册")
-        
-        # 检查连接状态
-        if self.client.is_connected():
-            logger.info(f"[{self.account_name}] ✅ 客户端已连接")
-        else:
-            logger.warning(f"[{self.account_name}] ⚠️ 客户端未连接，将在 run() 中连接")
+        logger.info(f"[{self.account_name}] 监听已启动")
     
     async def stop(self):
         """停止监听"""
@@ -246,22 +238,6 @@ class UserbotListener:
                 if not self.client.is_connected():
                     logger.info(f"[{self.account_name}] 正在连接...")
                     await self.client.connect()
-                    logger.info(f"[{self.account_name}] ✅ 连接成功")
-                
-                # 验证连接状态
-                if self.client.is_connected():
-                    logger.info(f"[{self.account_name}] ✅ 客户端已连接，开始监听消息...")
-                    # 获取账号信息确认连接正常
-                    try:
-                        me = await self.client.get_me()
-                        username = f"@{me.username}" if getattr(me, "username", None) else "无用户名"
-                        logger.info(f"[{self.account_name}] 📱 监听账号: {username} (ID: {me.id})")
-                    except Exception as e:
-                        logger.warning(f"[{self.account_name}] 无法获取账号信息: {e}")
-                else:
-                    logger.error(f"[{self.account_name}] ❌ 连接失败！")
-                    await asyncio.sleep(5)
-                    continue
                 
                 # 运行直到断开
                 await self.client.run_until_disconnected()
