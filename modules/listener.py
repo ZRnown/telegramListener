@@ -35,8 +35,11 @@ class UserbotListener:
             if not await self.client.is_user_authorized():
                 await self.client.disconnect()
                 raise Exception("Session 未授权或无效")
-            # 如果已授权，调用 start() 完成初始化（已授权时不会要求输入）
-            await self.client.start()
+            
+            # 如果已授权，客户端已经连接并可以使用
+            # 不需要调用 start()，因为 start() 在没有参数时会尝试交互式登录
+            # 我们已经通过 connect() + is_user_authorized() 验证了授权状态
+            
             # 获取监听账号信息
             try:
                 me = await self.client.get_me()
@@ -48,6 +51,11 @@ class UserbotListener:
         except Exception as e:
             # 如果启动失败（例如 session 无效），抛出异常，让调用者处理
             logger.error(f"[{self.account_name}] 客户端启动失败: {e}")
+            # 确保断开连接
+            try:
+                await self.client.disconnect()
+            except:
+                pass
             raise
         
         # 不再自动发送 /start，直接开始监听
