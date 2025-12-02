@@ -1,74 +1,73 @@
 # modules/message_handler.py - 消息处理模块
 import json
 import re
-from telethon import Button
+import logging
+from telethon import Button, utils
+
+logger = logging.getLogger(__name__)
 
 def extract_text_from_event(event):
     """获取消息的纯文本内容"""
     return (event.raw_text or "").strip()
 
-async def build_message_link(client, event, chat_username=None, message_id=None):
-    """构造消息链接（返回 https://t.me/username/message_id 格式）"""
+
+async def build_message_link(client, event, chat_username, message_id):
+    """
+    生成消息链接：
+    1. 优先尝试官方 API (export_message_link)
+    2. 失败则尝试手动拼接公开用户名链接
+    3. 再失败则强制拼接私有频道链接 (t.me/c/xxx/xxx)
+    """
+    chat_id = event.chat_id
+
+    # 尝试 1: 官方 API (最准确，但私有群+开启防复制时会失效)
     try:
-        # 1) 优先使用 export_message_link（返回格式：https://t.me/username/message_id）
-        try:
-            link = await client.export_message_link(event.message)
-            if link:
-                # export_message_link 返回的格式通常是 https://t.me/username/message_id
-                # 确保是 HTTPS 格式
-                if link.startswith('http://'):
-                    link = link.replace('http://', 'https://', 1)
-                elif not link.startswith('https://'):
-                    # 如果返回的不是完整 URL，尝试构造
-                    if link.startswith('t.me/'):
-                        link = f"https://{link}"
-                    elif '/' in link:
-                        # 可能是 username/message_id 格式
-                        link = f"https://t.me/{link}"
-                    else:
-                        # 只有用户名，无法构造完整链接
-                        return None
-                # 验证链接格式：https://t.me/username/message_id
-                # 链接应该类似：https://t.me/username/123 或 https://t.me/c/chat_id/message_id
-                if link.startswith('https://t.me/'):
-                    # 检查是否有 message_id（链接中至少要有2个部分：username 和 message_id）
-                    parts = link.replace('https://t.me/', '').split('/')
-                    if len(parts) >= 2 and parts[1].isdigit():
-                        return link
-        except Exception as e:
-            # export_message_link 可能失败（例如受保护的聊天、私聊等）
-            pass
-        
-        # 2) 如果 export_message_link 失败，尝试手动构造链接
-        try:
-            if not chat_username:
-                chat = await event.get_chat()
-                chat_username = getattr(chat, 'username', None)
-            
-            if not message_id:
-                message_id = event.message.id
-            
-            if chat_username and message_id:
-                # 构造链接：https://t.me/username/message_id
-                link = f"https://t.me/{chat_username}/{message_id}"
-                return link
-        except Exception:
-            pass
-        
-        # 3) 从消息文本中提取 https://t.me/ 格式的链接
-        text = extract_text_from_event(event)
-        if text:
-            # 匹配 https://t.me/username/message_id 格式（必须包含至少一个斜杠）
-            m = re.search(r'(https://t\.me/[^\s\)/]+/[^\s\)]+)', text)
-            if m:
-                link = m.group(1)
-                # 验证链接格式
-                if link.count('/') >= 3:
-                    return link
-        
-        return None
-    except Exception as e:
-        return None
+        # 显式传入 input_chat 和 message_id
+        link = await client.export_message_link(event.input_chat, message_id)
+        if link:
+            if link.startswith('http:'):
+                link = link.replace('http:', 'https:', 1)
+            return link
+    except Exception:
+        # 失败则继续后续逻辑
+        pass
+
+    # 尝试 2: 如果有公开用户名 (Public Channel/Group)
+    if chat_username:
+        return f"https://t.me/{chat_username}/{message_id}"
+
+    # 尝试 3: 强制手动拼接私有链接 (Private Channel/Group)
+    # 私有频道/群组 ID 通常以 -100 开头 (如 -1003270297333)
+    # 链接格式需要去掉 -100，变成 https://t.me/c/3270297333/173
+
+    # 使用 Telethon 的工具函数获取 peer id
+    real_id = utils.get_peer_id(event.input_chat)
+    str_id = str(real_id)
+
+    final_internal_id = None
+
+    # 情况 A: -100 开头的 ID
+    if str_id.startswith('-100'):
+        final_internal_id = str_id[4:]
+    # 情况 B: 100 开头的正数 ID（某些内部表示）
+    elif str_id.startswith('100') and len(str_id) > 10:
+        final_internal_id = str_id[3:]
+    # 情况 C: 其他负数 ID，尝试取绝对值
+    elif str_id.startswith('-'):
+        final_internal_id = str_id[1:]
+
+    # 兜底：还是没有就用 chat_id 的绝对值
+    if not final_internal_id:
+        final_internal_id = str(abs(chat_id))
+        if final_internal_id.startswith("100"):
+            final_internal_id = final_internal_id[3:]
+
+    manual_link = f"https://t.me/c/{final_internal_id}/{message_id}"
+
+    # 这里可以根据需要增加对话题（Forum Topics）的处理
+    # 例如: https://t.me/c/xxxx/topic_id/message_id
+
+    return manual_link
 
 def create_keyword_alert_message(event_data):
     """构造关键词提醒消息（带 Markdown 格式）"""
@@ -97,54 +96,33 @@ def create_keyword_alert_message(event_data):
         f"📄 **消息内容**：\n```\n{msg_text}\n```"
     )
     
-    # 必须添加"查看消息"按钮，优先使用消息链接（格式：https://t.me/username/message_id）
+    # 必须添加"查看消息"按钮，优先使用消息链接（格式：https://t.me/username/message_id 或 https://t.me/c/...）
     final_link = None
     
-    # 1. 优先使用消息链接（应该是 https://t.me/username/message_id 格式）
+    # 1. 优先使用 build_message_link 得到的消息链接
     if msg_link and msg_link.strip():
         final_link = msg_link.strip()
+        logger.debug(f"[keyword_alert] 初始 message_link: {final_link}")
         # 确保是 HTTPS 格式
         if final_link.startswith('http://'):
             final_link = final_link.replace('http://', 'https://', 1)
-        # 验证格式：必须是 https://t.me/username/message_id（必须包含至少3个斜杠）
-        if not final_link.startswith('https://t.me/'):
-            # 如果不是正确格式，尝试修复
-            if final_link.startswith('t.me/'):
-                final_link = f"https://{final_link}"
-            elif '/' in final_link and not final_link.startswith('http'):
-                final_link = f"https://t.me/{final_link}"
-        
-        # 验证链接格式：https://t.me/username/message_id（必须包含至少3个斜杠）
-        if final_link.count('/') < 3:
-            final_link = None  # 格式不正确，忽略
-    
-    # 2. 如果没有链接，尝试从消息文本中提取 https://t.me/username/message_id 格式的链接
+    # 2. 如果没有链接，尝试从消息文本中提取 https://t.me/username/message_id 或 https://t.me/c/... 格式的链接
     if not final_link:
         link_match = re.search(r'(https://t\.me/[^\s\)/]+/[^\s\)]+)', msg_text)
         if link_match:
             final_link = link_match.group(1)
             # 验证格式
             if final_link.count('/') < 3:
+                logger.debug(f"[keyword_alert] 从消息文本提取的链接无效: {final_link}")
                 final_link = None
-    
-    # 3. 如果还是没有有效链接，尝试从 chat_title 中提取用户名构造频道链接
-    # 注意：无法获取 message_id 时，只能链接到频道/群，不能链接到具体消息
-    if not final_link:
-        # 尝试从 chat_title 中提取用户名（如果包含 @ 或看起来像用户名）
-        if '@' in chat_title:
-            username_match = re.search(r'@?([a-zA-Z0-9_]+)', chat_title)
-            if username_match:
-                final_link = f"https://t.me/{username_match.group(1)}"
-        # 如果 chat_title 本身看起来像用户名（不包含空格，只包含字母数字下划线）
-        elif re.match(r'^[a-zA-Z0-9_]+$', chat_title):
-            final_link = f"https://t.me/{chat_title}"
-    
-    # 4. 按钮必须显示（用户要求）
-    # 如果有有效链接（包含 message_id），使用完整链接；否则使用频道链接
+
+    # 3. 按钮必须显示（用户要求）
     if final_link and final_link.startswith('https://t.me/'):
+        logger.info(f"[keyword_alert] 最终使用链接生成按钮: {final_link}")
         buttons = [[Button.url("查看消息", final_link)]]
     else:
         # 如果完全没有链接，不显示按钮（避免跳转到错误页面）
+        logger.info(f"[keyword_alert] 无法生成有效链接，按钮将不显示。原始 msg_link={msg_link!r}, chat_title={chat_title!r}")
         buttons = None
     
     return alert_msg, buttons

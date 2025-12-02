@@ -103,6 +103,7 @@ class UserbotListener:
             chat = await event.get_chat()
             chat_title = getattr(chat, "title", None) or getattr(chat, "username", None) or "未知"
             chat_username = getattr(chat, "username", None)  # 保存 chat username 用于构造链接
+            chat_id = getattr(chat, "id", None)
             
             msg_text = extract_text_from_event(event) or "（无文本内容，可能仅为媒体消息）"
             msg_link = await build_message_link(self.client, event, chat_username, event.message.id)
@@ -120,6 +121,8 @@ class UserbotListener:
                 "sender_name": sender_display_name,
                 "sender_username": sender_username,
                 "chat_title": chat_title,
+                "chat_id": chat_id,
+                "message_id": event.message.id,
                 "message_text": msg_text,
                 "message_link": msg_link
             }
