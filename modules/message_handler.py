@@ -118,11 +118,11 @@ def create_keyword_alert_message(event_data):
 
     # 3. 按钮必须显示（用户要求）
     if final_link and final_link.startswith('https://t.me/'):
-        logger.info(f"[keyword_alert] 最终使用链接生成按钮: {final_link}")
+        logger.debug(f"[keyword_alert] 最终使用链接生成按钮: {final_link}")
         buttons = [[Button.url("查看消息", final_link)]]
     else:
         # 如果完全没有链接，不显示按钮（避免跳转到错误页面）
-        logger.info(f"[keyword_alert] 无法生成有效链接，按钮将不显示。原始 msg_link={msg_link!r}, chat_title={chat_title!r}")
+        logger.debug(f"[keyword_alert] 无法生成有效链接，按钮将不显示。原始 msg_link={msg_link!r}, chat_title={chat_title!r}")
         buttons = None
     
     return alert_msg, buttons

@@ -12,6 +12,11 @@ logging.basicConfig(
 )
 logger = logging.getLogger(__name__)
 
+# 减少 Telethon 的日志输出（只显示 WARNING 及以上）
+logging.getLogger('telethon').setLevel(logging.WARNING)
+logging.getLogger('telethon.network').setLevel(logging.ERROR)  # 网络层错误仍然显示
+logging.getLogger('telethon.client').setLevel(logging.WARNING)  # 减少 flood wait 等 INFO 日志
+
 async def main():
     """主函数"""
     # 读取基础配置
@@ -55,7 +60,14 @@ async def main():
     # 在后台运行所有监听任务
     listener_tasks = []
     for session_name, listener in listener_manager.listeners.items():
-        task = asyncio.create_task(listener.run())
+        async def run_with_monitoring(listener_obj, session_name):
+            """带监控的监听任务"""
+            try:
+                await listener_obj.run()
+            except Exception as e:
+                logger.error(f"[{session_name}] 监听任务异常退出: {e}", exc_info=True)
+        
+        task = asyncio.create_task(run_with_monitoring(listener, session_name))
         listener_tasks.append(task)
         listener_manager.tasks[session_name] = task
     

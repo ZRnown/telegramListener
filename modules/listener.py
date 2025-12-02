@@ -2,6 +2,7 @@
 from telethon import TelegramClient
 from telethon.sessions import StringSession
 from telethon.events import NewMessage
+from telethon.errors import TypeNotFoundError
 import asyncio
 import json
 import logging
@@ -160,37 +161,54 @@ class UserbotListener:
         """设置消息处理器"""
         @self.client.on(NewMessage())
         async def handler(event):
-            # 不监听私聊
-            if event.is_private:
-                return
-            
-            # 打印监听日志
-            await self.log_incoming_event(event)
-            
-            # 加载最新配置
-            data = load_data()
-            keywords = data.get("keywords", [])
-            
-            if not keywords:
-                return
-            
-            text = extract_text_from_event(event)
-            if not text:
-                return
-            
-            # 不要对自己发送的提醒再次触发
-            if text.startswith("🔔 关键词提醒"):
-                return
-            
-            # 关键词匹配
-            hit = None
-            for kw in keywords:
-                if kw and kw in text:
-                    hit = kw
-                    break
-            
-            if hit:
-                await self.send_keyword_alert(event, hit)
+            try:
+                # 不监听私聊
+                if event.is_private:
+                    return
+                
+                # 打印监听日志
+                await self.log_incoming_event(event)
+                
+                # 加载最新配置
+                data = load_data()
+                keywords = data.get("keywords", [])
+                
+                if not keywords:
+                    return
+                
+                text = extract_text_from_event(event)
+                if not text:
+                    return
+                
+                # 不要对自己发送的提醒再次触发
+                if text.startswith("🔔 关键词提醒"):
+                    return
+                
+                # 关键词匹配
+                hit = None
+                for kw in keywords:
+                    if kw and kw in text:
+                        hit = kw
+                        break
+                
+                if hit:
+                    # 获取聊天信息用于日志
+                    try:
+                        chat = await event.get_chat()
+                        chat_title = getattr(chat, "title", None) or getattr(chat, "username", None) or str(event.chat_id)
+                    except:
+                        chat_title = "未知"
+                    logger.info(f"[{self.account_name}] 🔍 检测到关键词: {hit} (来源: {chat_title})")
+                    await self.send_keyword_alert(event, hit)
+            except TypeNotFoundError:
+                # 忽略 TypeNotFoundError（Telegram API 新增类型但 Telethon 版本过旧）
+                # 这是已知问题，不影响功能
+                pass
+            except Exception as e:
+                # 其他错误记录但不中断监听
+                logger.warning(f"[{self.account_name}] 消息处理错误: {e}")
+                # 记录错误类型，帮助诊断
+                logger.debug(f"[{self.account_name}] 错误类型: {type(e).__name__}", exc_info=True)
     
     async def start(self):
         """启动监听"""
@@ -210,7 +228,56 @@ class UserbotListener:
     
     async def run(self):
         """运行客户端（阻塞）"""
-        await self.client.run_until_disconnected()
+        logger.info(f"[{self.account_name}] 监听任务开始运行")
+        retry_count = 0
+        max_retries = 10
+        
+        while self.is_running:
+            try:
+                # 确保连接
+                if not self.client.is_connected():
+                    logger.info(f"[{self.account_name}] 正在连接...")
+                    await self.client.connect()
+                
+                # 运行直到断开
+                await self.client.run_until_disconnected()
+                # 如果正常断开连接，退出循环
+                logger.warning(f"[{self.account_name}] 连接已断开")
+                break
+                
+            except TypeNotFoundError as e:
+                # TypeNotFoundError 通常发生在消息处理时，不应该导致监听停止
+                # 但如果在网络层发生，我们需要处理
+                logger.debug(f"[{self.account_name}] 遇到 TypeNotFoundError: {e}")
+                retry_count = 0  # 重置重试计数
+                await asyncio.sleep(1)
+                continue
+                
+            except Exception as e:
+                retry_count += 1
+                error_msg = str(e).lower()
+                
+                # 如果是连接相关错误，尝试重连
+                if any(keyword in error_msg for keyword in ["disconnect", "connection", "network", "timeout"]):
+                    if retry_count <= max_retries:
+                        logger.warning(f"[{self.account_name}] 连接错误，尝试重连 ({retry_count}/{max_retries}): {e}")
+                        await asyncio.sleep(min(retry_count * 2, 10))  # 指数退避，最多10秒
+                        try:
+                            if not self.client.is_connected():
+                                await self.client.connect()
+                            retry_count = 0  # 重连成功，重置计数
+                        except Exception as reconnect_error:
+                            logger.error(f"[{self.account_name}] 重连失败: {reconnect_error}")
+                    else:
+                        logger.error(f"[{self.account_name}] 重连次数过多，停止监听")
+                        break
+                else:
+                    # 其他错误，记录但不停止监听
+                    logger.error(f"[{self.account_name}] 监听运行错误: {e}", exc_info=True)
+                    await asyncio.sleep(5)
+                    retry_count = 0  # 非连接错误，重置计数
+        
+        logger.warning(f"[{self.account_name}] 监听任务已退出")
 
 class ListenerManager:
     """监听管理器 - 管理所有账号的监听"""
