@@ -387,16 +387,41 @@ class BotManager:
                     return
                 
                 elif wait_type == "keyword":
+                    # 检查是否是"完成"命令
+                    if text.strip().lower() in ["完成", "完成添加", "done", "finish"]:
+                        await event.respond("✅ 关键词添加已结束")
+                        del self.waiting_for[user_id]
+                        return
+                    
+                    # 检查是否是"取消"命令
+                    if text.strip().lower() in ["取消", "cancel"]:
+                        await event.respond("❌ 已取消添加关键词")
+                        del self.waiting_for[user_id]
+                        return
+                    
+                    # 添加关键词（持续模式）
                     new_keywords = [kw.strip() for kw in text.split('\n') if kw.strip()]
                     added = add_keywords(new_keywords)
                     if added:
-                        await event.respond(f"✅ 已添加关键词：{', '.join(added)}")
+                        await event.respond(
+                            f"✅ 已添加关键词：{', '.join(added)}\n\n"
+                            "💡 继续发送关键词，或输入「完成」结束添加。"
+                        )
                     else:
-                        await event.respond("⚠️ 这些关键词已存在。")
-                    del self.waiting_for[user_id]
+                        await event.respond(
+                            "⚠️ 这些关键词已存在。\n\n"
+                            "💡 继续发送关键词，或输入「完成」结束添加。"
+                        )
+                    # 不删除 waiting_for，继续等待下一个关键词
                     return
                 
                 elif wait_type == "target":
+                    # 检查是否是"取消"命令
+                    if text.strip().lower() in ["取消", "cancel"]:
+                        await event.respond("❌ 已取消设置目标群")
+                        del self.waiting_for[user_id]
+                        return
+                    
                     try:
                         target_id = None
                         if text.startswith('-100') or text.startswith('-'):
@@ -408,7 +433,13 @@ class BotManager:
                         set_target_channel(target_id)
                         await event.respond(f"✅ 已设置目标群：`{target_id}`")
                     except Exception as e:
-                        await event.respond(f"❌ 设置失败：{e}\n\n请确保发送的是有效的频道/群 ID 或用户名。")
+                        await event.respond(
+                            f"❌ 设置失败：{e}\n\n"
+                            "请确保发送的是有效的频道/群 ID 或用户名。\n\n"
+                            "💡 输入「取消」可取消设置。"
+                        )
+                        # 不删除 waiting_for，允许用户重试或取消
+                        return
                     del self.waiting_for[user_id]
                     return
                 
@@ -456,7 +487,8 @@ class BotManager:
                     "请发送目标频道/群的 ID（例如：`-1001234567890`）或用户名（例如：`@channel`）：\n\n"
                     "💡 提示：\n"
                     "- 频道/群 ID 可以通过 @userinfobot 获取\n"
-                    "- 确保机器人已加入目标频道/群并具有发送消息权限"
+                    "- 确保机器人已加入目标频道/群并具有发送消息权限\n\n"
+                    "💬 输入「取消」可取消设置。"
                 )
             
             elif text == "📋 查看配置":
@@ -654,7 +686,8 @@ class BotManager:
                     self.waiting_for[user_id] = "keyword"
                     await event.respond(
                         "➕ **添加关键词**\n\n"
-                        "请直接发送要添加的关键词（一行一个，或一次发送多个用换行分隔）："
+                        "请直接发送要添加的关键词（一行一个，或一次发送多个用换行分隔）：\n\n"
+                        "💡 可以连续发送多个关键词，输入「完成」结束添加，输入「取消」取消操作。"
                     )
                     await event.answer()
                 
