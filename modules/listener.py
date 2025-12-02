@@ -87,7 +87,7 @@ class UserbotListener:
     async def send_keyword_alert(self, event, keyword_hit):
         """直接使用机器人客户端发送关键词提醒到目标群"""
         if not self.bot_client:
-            logger.warning(f"[{self.account_name}] ⚠️ 未配置机器人客户端，无法发送提醒")
+            logger.error(f"[{self.account_name}] ⚠️ 未配置机器人客户端，无法发送提醒！请检查 bot_client 是否正确设置。")
             return
         
         try:
@@ -314,6 +314,12 @@ class ListenerManager:
                 bot_client=self.bot_client,  # 传递机器人客户端
                 session_string=session_string
             )
+            
+            # 记录 bot_client 状态
+            if self.bot_client:
+                logger.debug(f"[{account_name}] bot_client 已设置: {type(self.bot_client).__name__}")
+            else:
+                logger.warning(f"[{account_name}] ⚠️ bot_client 为 None，转发功能可能无法使用！")
             await listener.init()
             await listener.start()
             
@@ -380,4 +386,11 @@ class ListenerManager:
             }
             for session_name, listener in self.listeners.items()
         }
+    
+    def update_bot_client(self, bot_client):
+        """更新所有监听器的 bot_client"""
+        self.bot_client = bot_client
+        for listener in self.listeners.values():
+            listener.bot_client = bot_client
+        logger.info(f"✅ 已更新所有监听器的 bot_client")
 

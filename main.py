@@ -38,7 +38,7 @@ async def main():
     bot_manager = BotManager(api_id, api_hash, bot_token, listener_manager)
     await bot_manager.init()
     
-    # 设置机器人实体和客户端
+    # 设置机器人实体和客户端（在启动监听器之前）
     if bot_username:
         try:
             bot_entity = await bot_manager.client.get_entity(bot_username)
@@ -51,25 +51,18 @@ async def main():
     # 设置机器人事件处理器
     await bot_manager.setup_handlers()
     
-    # 启动所有已配置的监听
+    # 启动所有已配置的监听（此时 bot_client 已经设置）
     # logger.info("正在启动已配置的监听账号...")
     await listener_manager.reload_all()
     
+    # 确保所有监听器都有 bot_client（双重保险）
+    if listener_manager.bot_client:
+        listener_manager.update_bot_client(listener_manager.bot_client)
+    
     logger.info("🚀 系统已启动")
     
-    # 在后台运行所有监听任务
-    listener_tasks = []
-    for session_name, listener in listener_manager.listeners.items():
-        async def run_with_monitoring(listener_obj, session_name):
-            """带监控的监听任务"""
-            try:
-                await listener_obj.run()
-            except Exception as e:
-                logger.error(f"[{session_name}] 监听任务异常退出: {e}", exc_info=True)
-        
-        task = asyncio.create_task(run_with_monitoring(listener, session_name))
-        listener_tasks.append(task)
-        listener_manager.tasks[session_name] = task
+    # 获取所有监听任务（reload_all() 已经创建了任务）
+    listener_tasks = list(listener_manager.tasks.values())
     
     # 并发运行管理机器人（主任务）和所有监听任务
     try:
