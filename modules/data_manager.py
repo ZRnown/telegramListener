@@ -86,3 +86,17 @@ def set_bot_username(username):
     data["bot_username"] = username
     save_data(data)
 
+def clear_all_accounts():
+    """清空所有账号"""
+    data = load_data()
+    data["userbot_accounts"] = []
+    save_data(data)
+    return True
+
+def clear_all_keywords():
+    """清空所有关键词"""
+    data = load_data()
+    data["keywords"] = []
+    save_data(data)
+    return True
+

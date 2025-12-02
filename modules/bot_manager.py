@@ -7,7 +7,8 @@ import os
 import base64
 from modules.data_manager import (
     load_data, save_data, add_account, remove_account,
-    add_keywords, remove_keyword, set_target_channel, set_bot_username
+    add_keywords, remove_keyword, set_target_channel, set_bot_username,
+    clear_all_accounts, clear_all_keywords
 )
 from modules.message_handler import create_keyword_alert_message
 
@@ -72,6 +73,7 @@ class BotManager:
         return [
             [Button.inline("➕ 添加账号", b"account_add")],
             [Button.inline("➖ 移除账号", b"account_remove")],
+            [Button.inline("🗑️ 清空所有账号", b"account_clear_all")],
             [Button.inline("🔙 返回主菜单", b"menu_main")]
         ]
     
@@ -80,7 +82,7 @@ class BotManager:
         return [
             [Button.inline("➕ 添加关键词", b"keyword_add")],
             [Button.inline("➖ 删除关键词", b"keyword_remove")],
-            [Button.inline("📋 查看关键词列表", b"keyword_list")],
+            [Button.inline("🗑️ 清空所有关键词", b"keyword_clear_all")],
             [Button.inline("🔙 返回主菜单", b"menu_main")]
         ]
     
@@ -170,29 +172,96 @@ class BotManager:
                 wait_type = self.waiting_for[user_id]
                 
                 if wait_type == "session":
+                    # 检查是否是"完成"命令
+                    if text.strip().lower() in ["完成", "完成导入", "done", "finish"]:
+                        await event.respond("✅ 批量导入已结束")
+                        del self.waiting_for[user_id]
+                        return
+                    
                     # 用户发送了 session，需要从 session 中获取账号信息
                     session_name = f"anon_{len(load_data().get('userbot_accounts', [])) + 1}"
                     session_str = None
                     account_name = "未知账号"
                     success = False
                     msg = ""
+                    session_valid = False  # 初始化 session_valid
                     
                     # 检查是否是文件
                     if event.message.media:
                         success, msg = await self.save_session_from_file(event, session_name)
                         if success:
-                            # 从文件 session 中获取账号信息
-                            try:
-                                from telethon import TelegramClient
-                                temp_client = TelegramClient(session_name, self.api_id, self.api_hash)
-                                await temp_client.connect()
-                                if await temp_client.is_user_authorized():
-                                    me = await temp_client.get_me()
-                                    account_name = f"{me.first_name or ''} {me.last_name or ''}".strip() or (f"@{me.username}" if me.username else f"用户{me.id}")
-                                await temp_client.disconnect()
-                            except Exception as e:
-                                logger.warning(f"从 session 文件获取账号信息失败: {e}")
-                                account_name = f"账号_{session_name}"
+                            # 检查这个 session 是否已经在运行
+                            existing_listener = self.listener_manager.listeners.get(session_name)
+                            if existing_listener and existing_listener.is_running:
+                                # 如果已经在运行，直接使用已有的信息
+                                account_name = existing_listener.account_name
+                                session_valid = True
+                            else:
+                                # 验证 session 文件是否有效
+                                temp_client = None
+                                try:
+                                    from telethon import TelegramClient
+                                    temp_client = TelegramClient(session_name, self.api_id, self.api_hash)
+                                    await temp_client.connect()
+                                    if await temp_client.is_user_authorized():
+                                        me = await temp_client.get_me()
+                                        account_name = f"{me.first_name or ''} {me.last_name or ''}".strip() or (f"@{me.username}" if me.username else f"用户{me.id}")
+                                        session_valid = True
+                                    else:
+                                        session_valid = False
+                                except Exception as e:
+                                    error_msg = str(e)
+                                    logger.warning(f"验证 session 文件失败: {e}")
+                                    
+                                    # 根据错误类型提供不同的提示
+                                    if "database is locked" in error_msg.lower():
+                                        # 数据库被锁定，可能是文件正在被使用
+                                        await event.respond(
+                                            f"⚠️ Session 文件正在被使用，无法验证\n\n"
+                                            f"错误：{error_msg}\n\n"
+                                            "可能原因：\n"
+                                            "- 该 session 文件已被其他程序使用\n"
+                                            "- 请稍后重试，或确保没有其他程序在使用该文件\n\n"
+                                            "💡 继续发送下一个 session，或输入「完成」结束导入。"
+                                        )
+                                    elif "file is not a database" in error_msg.lower() or "not a database" in error_msg.lower():
+                                        # 文件不是有效的数据库
+                                        await event.respond(
+                                            f"❌ 文件不是有效的 Telethon session 文件\n\n"
+                                            "请确认：\n"
+                                            "- 这是通过 Telethon 生成的 .session 文件\n"
+                                            "- 文件没有损坏\n\n"
+                                            "💡 继续发送下一个 session，或输入「完成」结束导入。"
+                                        )
+                                    else:
+                                        # 其他错误
+                                        await event.respond(
+                                            f"❌ Session 验证失败，账号未添加\n\n"
+                                            f"错误：{error_msg}\n\n"
+                                            "请确认这是有效的 Telethon session 文件。\n\n"
+                                            "💡 继续发送下一个 session，或输入「完成」结束导入。"
+                                        )
+                                    session_valid = False
+                                    account_name = f"账号_{session_name}"
+                                    return  # 不删除 waiting_for，继续等待下一个 session
+                                finally:
+                                    # 确保客户端正确关闭
+                                    if temp_client:
+                                        try:
+                                            await temp_client.disconnect()
+                                            # 等待一小段时间，确保所有任务完成
+                                            await asyncio.sleep(0.1)
+                                        except Exception:
+                                            pass
+                        
+                        # 如果验证失败，不添加账号
+                        if not session_valid:
+                            await event.respond(
+                                f"❌ Session 验证失败，账号未添加\n\n"
+                                "请确认这是有效的 Telethon session 文件。\n\n"
+                                "💡 继续发送下一个 session，或输入「完成」结束导入。"
+                            )
+                            return  # 不删除 waiting_for，继续等待下一个 session
                     else:
                         # 当作字符串处理
                         result = await self.save_session_from_string(text, session_name)
@@ -203,22 +272,73 @@ class BotManager:
                             success, msg = result[:2]
                             session_str = result[2] if len(result) > 2 else text.strip()
                         
+                        # 验证 session 是否有效（在添加账号之前）
+                        account_name = None
+                        session_valid = False
+                        temp_client = None
                         if success and session_str:
-                            # 从 StringSession 中获取账号信息
                             try:
                                 from telethon import TelegramClient
                                 from telethon.sessions import StringSession
                                 temp_client = TelegramClient(StringSession(session_str), self.api_id, self.api_hash)
+                                # 使用 connect() + is_user_authorized()，避免交互式输入
                                 await temp_client.connect()
                                 if await temp_client.is_user_authorized():
                                     me = await temp_client.get_me()
                                     account_name = f"{me.first_name or ''} {me.last_name or ''}".strip() or (f"@{me.username}" if me.username else f"用户{me.id}")
-                                await temp_client.disconnect()
+                                    session_valid = True
+                                else:
+                                    session_valid = False
                             except Exception as e:
-                                logger.warning(f"从 session 字符串获取账号信息失败: {e}")
-                                account_name = f"账号_{session_name}"
+                                logger.warning(f"验证 session 失败: {e}")
+                                session_valid = False
+                            finally:
+                                if temp_client:
+                                    try:
+                                        await temp_client.disconnect()
+                                        await asyncio.sleep(0.1)
+                                    except Exception:
+                                        pass
+                        
+                        # 如果没有 session_string，尝试验证本地 session 文件
+                        if success and not session_str:
+                            temp_client = None
+                            try:
+                                from telethon import TelegramClient
+                                temp_client = TelegramClient(session_name, self.api_id, self.api_hash)
+                                # 使用 connect() + is_user_authorized()，避免交互式输入
+                                await temp_client.connect()
+                                if await temp_client.is_user_authorized():
+                                    me = await temp_client.get_me()
+                                    account_name = f"{me.first_name or ''} {me.last_name or ''}".strip() or (f"@{me.username}" if me.username else f"用户{me.id}")
+                                    session_valid = True
+                                else:
+                                    session_valid = False
+                            except Exception as e:
+                                logger.warning(f"验证 session 文件失败: {e}")
+                                session_valid = False
+                            finally:
+                                if temp_client:
+                                    try:
+                                        await temp_client.disconnect()
+                                        await asyncio.sleep(0.1)
+                                    except Exception:
+                                        pass
+                        
+                        # 如果验证失败，不添加账号
+                        if not session_valid:
+                            await event.respond(
+                                f"❌ Session 验证失败，账号未添加\n\n"
+                                "请确认这是有效的 Telethon session 文件或 StringSession 字符串。\n\n"
+                                "💡 继续发送下一个 session，或输入「完成」结束导入。"
+                            )
+                            return  # 不删除 waiting_for，继续等待下一个 session
+                        
+                        # 如果 account_name 为空，使用默认名称
+                        if not account_name:
+                            account_name = f"账号_{session_name}"
                     
-                    if success:
+                    if success and session_valid:
                         # 添加账号记录
                         add_success, add_msg = add_account(account_name, session_name, session_str)
                         if add_success:
@@ -241,25 +361,29 @@ class BotManager:
                                 status_text = "已启动"
                                 prefix = "✅ 账号添加并启动成功！"
                             else:
+                                # 启动失败，删除已添加的账号
+                                from modules.data_manager import remove_account
+                                remove_account(session_name)
                                 status_text = (
-                                    "启动失败：session 文件可能无效（例如出现 'file is not a database' 错误）。"
-                                    " 请确认这是 Telethon 生成的 `.session` 文件，"
-                                    "或使用 `login_anon.py` 登录生成后再重试。"
+                                    "启动失败：session 可能无效或已过期。"
+                                    " 请确认这是有效的 Telethon session。"
                                 )
-                                prefix = "⚠️ 账号已保存，但监听启动失败"
+                                prefix = "❌ 账号验证通过，但启动失败，已自动移除"
 
                             await event.respond(
                                 f"{prefix}\n\n"
                                 f"账号名称：**{account_name}**\n"
                                 f"监听账号：{listener_user}\n"
-                                f"监听状态：{status_text}"
+                                f"监听状态：{status_text}\n\n"
+                                "💡 继续发送下一个 session，或输入「完成」结束导入。"
                             )
                         else:
-                            await event.respond(f"❌ 添加账号失败：{add_msg}")
+                            await event.respond(f"❌ 添加账号失败：{add_msg}\n\n💡 继续发送下一个 session，或输入「完成」结束导入。")
                     else:
-                        await event.respond(f"❌ {msg}")
+                        await event.respond(f"❌ {msg}\n\n💡 继续发送下一个 session，或输入「完成」结束导入。")
                     
-                    del self.waiting_for[user_id]
+                    # 不删除 waiting_for，支持批量导入
+                    # 用户输入"完成"时会删除
                     return
                 
                 elif wait_type == "keyword":
@@ -405,7 +529,8 @@ class BotManager:
                         "请直接发送 session 文件或 session 字符串：\n\n"
                         "💡 提示：\n"
                         "- 可以发送 `.session` 文件\n"
-                        "- 也可以发送 session 字符串（StringSession）"
+                        "- 也可以发送 session 字符串（StringSession）\n"
+                        "- 支持批量导入：连续发送多个 session，完成后输入「完成」结束导入"
                     )
                     await event.answer()
                 
@@ -417,11 +542,17 @@ class BotManager:
                         await event.answer()
                         return
                     
+                    # 获取运行状态
+                    status = self.listener_manager.get_listener_status()
+                    
                     buttons = []
                     for acc in accounts:
+                        session_name = acc.get("session_name", "未知")
+                        status_info = status.get(session_name, {})
+                        running = "✅" if status_info.get("is_running") else "❌"
                         buttons.append([Button.inline(
-                            f"❌ {acc.get('name', '未知')} ({acc.get('session_name', '未知')})",
-                            f"account_del_{acc.get('session_name', '')}"
+                            f"{running} {acc.get('name', '未知')} ({session_name})",
+                            f"account_del_{session_name}"
                         )])
                     buttons.append([Button.inline("🔙 返回", b"menu_accounts")])
                     
@@ -475,6 +606,50 @@ class BotManager:
                         buttons=self.get_account_menu()
                     )
                 
+                elif data == "account_clear_all":
+                    # 确认清空所有账号
+                    data_obj = load_data()
+                    accounts = data_obj.get("userbot_accounts", [])
+                    if not accounts:
+                        await event.respond("❌ 当前没有已添加的账号。")
+                        await event.answer()
+                        return
+                    
+                    buttons = [
+                        [Button.inline("✅ 确认清空", b"account_clear_confirm")],
+                        [Button.inline("❌ 取消", b"menu_accounts")]
+                    ]
+                    await event.edit(
+                        f"⚠️ **确认清空所有账号**\n\n"
+                        f"当前共有 {len(accounts)} 个账号，清空后将：\n"
+                        f"- 删除所有账号记录\n"
+                        f"- 停止所有监听\n\n"
+                        f"此操作不可恢复！",
+                        buttons=buttons
+                    )
+                
+                elif data == "account_clear_confirm":
+                    # 执行清空所有账号
+                    data_obj = load_data()
+                    accounts = data_obj.get("userbot_accounts", [])
+                    
+                    # 停止所有监听
+                    for acc in accounts:
+                        session_name = acc.get("session_name")
+                        if session_name:
+                            await self.listener_manager.stop_listener(session_name)
+                    
+                    # 清空所有账号
+                    clear_all_accounts()
+                    
+                    await event.respond("✅ 已清空所有账号")
+                    
+                    # 更新菜单
+                    await event.edit(
+                        "📱 **账号管理**\n\n当前没有已添加的账号。",
+                        buttons=self.get_account_menu()
+                    )
+                
                 elif data == "keyword_add":
                     self.waiting_for[user_id] = "keyword"
                     await event.respond(
@@ -510,17 +685,37 @@ class BotManager:
                         await event.respond(f"❌ 删除失败：关键词不存在")
                     await event.edit("🔑 **关键词管理**", buttons=self.get_keyword_menu())
                 
-                elif data == "keyword_list":
+                elif data == "keyword_clear_all":
+                    # 确认清空所有关键词
                     data_obj = load_data()
                     keywords = data_obj.get("keywords", [])
                     if not keywords:
-                        await event.respond("📋 当前没有已添加的关键词。")
-                    else:
-                        msg = "📋 **关键词列表**\n\n"
-                        for i, kw in enumerate(keywords, 1):
-                            msg += f"{i}. `{kw}`\n"
-                        await event.respond(msg)
-                    await event.edit("🔑 **关键词管理**", buttons=self.get_keyword_menu())
+                        await event.respond("❌ 当前没有已添加的关键词。")
+                        await event.answer()
+                        return
+                    
+                    buttons = [
+                        [Button.inline("✅ 确认清空", b"keyword_clear_confirm")],
+                        [Button.inline("❌ 取消", b"menu_keywords")]
+                    ]
+                    await event.edit(
+                        f"⚠️ **确认清空所有关键词**\n\n"
+                        f"当前共有 {len(keywords)} 个关键词，清空后将：\n"
+                        f"- 删除所有关键词记录\n\n"
+                        f"此操作不可恢复！",
+                        buttons=buttons
+                    )
+                
+                elif data == "keyword_clear_confirm":
+                    # 执行清空所有关键词
+                    clear_all_keywords()
+                    await event.respond("✅ 已清空所有关键词")
+                    
+                    # 更新菜单
+                    await event.edit(
+                        "🔑 **关键词管理**\n\n当前没有已添加的关键词。",
+                        buttons=self.get_keyword_menu()
+                    )
                 
                 elif data == "menu_keywords":
                     await event.edit(

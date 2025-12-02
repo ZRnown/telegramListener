@@ -29,15 +29,26 @@ class UserbotListener:
     
     async def init(self):
         """初始化客户端"""
-        await self.client.start()
-        # 获取监听账号信息
         try:
-            me = await self.client.get_me()
-            self.listener_username = f"@{me.username}" if getattr(me, "username", None) else "无"
-            # logger.info(f"[{self.account_name}] 监听账号已初始化: {self.listener_username}")
+            # 先连接并检查是否已授权，避免交互式输入
+            await self.client.connect()
+            if not await self.client.is_user_authorized():
+                await self.client.disconnect()
+                raise Exception("Session 未授权或无效")
+            # 如果已授权，调用 start() 完成初始化（已授权时不会要求输入）
+            await self.client.start()
+            # 获取监听账号信息
+            try:
+                me = await self.client.get_me()
+                self.listener_username = f"@{me.username}" if getattr(me, "username", None) else "无"
+                # logger.info(f"[{self.account_name}] 监听账号已初始化: {self.listener_username}")
+            except Exception as e:
+                self.listener_username = "未知"
+                logger.error(f"[{self.account_name}] 监听账号信息获取失败: {e}")
         except Exception as e:
-            self.listener_username = "未知"
-            logger.error(f"[{self.account_name}] 监听账号信息获取失败: {e}")
+            # 如果启动失败（例如 session 无效），抛出异常，让调用者处理
+            logger.error(f"[{self.account_name}] 客户端启动失败: {e}")
+            raise
         
         # 不再自动发送 /start，直接开始监听
     
@@ -138,6 +149,10 @@ class UserbotListener:
         """设置消息处理器"""
         @self.client.on(NewMessage())
         async def handler(event):
+            # 不监听私聊
+            if event.is_private:
+                return
+            
             # 打印监听日志
             await self.log_incoming_event(event)
             
